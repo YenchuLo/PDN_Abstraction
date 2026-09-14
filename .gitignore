@@ -1,0 +1,37 @@
+# Run outputs and logs
+**/outputs/
+**/logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Generated viewers / plots at repo root
+/*.html
+/*.png
+
+# Local benchmarks (IBM / TSMC / SRAM) — add locally, do not publish
+Benchmarks/
+
+# Third-party and generated paper extras
+my_flow/paper/_formula_cache/
+my_flow/paper/Architecture_Implications_of_Pads_as_a_Scarce_Resource.pdf
+my_flow/paper/Power_Delivery_Network_Modeling_and_Benchmarking_for_Emerging_Heterogeneous_Integration_Technologies.pdf
+my_flow/paper/Robust_method_for_analysis_of_power_distribution_networks.pdf
+
+# Internal spec (do not publish)
+PDN_Abstraction_for_EMIR_Feasibility-TSMC_Spec.pdf
+
+# Editors / OS
+.DS_Store
+*~
+*.swp
+.idea/
+.vscode/
