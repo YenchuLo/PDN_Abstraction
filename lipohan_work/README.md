@@ -4,13 +4,17 @@ Does **not** replace `spec_flow`. It reuses stages 01–04 (parse → ports → 
 star topology) and only swaps the **fitting objective** over global
 `(Rx, Ry, Rz)`.
 
+For the complete derivation, units, mathematical meaning, physical
+interpretation, limitations, and relationships among all objectives, see
+[`OBJECTIVE_FUNCTIONS.md`](OBJECTIVE_FUNCTIONS.md).
+
 ## Priority costs (default `--costs priority`)
 
 | Name | Cost | Residual used by the optimiser |
 | ---- | ---- | ------------------------------ |
 | `eigen` | \(J_\lambda=\sum_i(\lambda_i^M-\lambda_i^S)^2\) | TSMC spec; \(\lambda^S=\mathrm{diag}(Q^\top G_S Q)\) |
 | `frobenius` | \(J_F=\|G_S-G'_M\|_F^2\) | \(\mathrm{vec}(G_S-G'_M)\) |
-| `rayleigh` | \(J_{RQ}\) | Rayleigh on mixed test directions (eigen subsample + random + current lifts). **Not** identical to `eigen`. Use `--rq-basis eigen` to recover \(J_\lambda\). |
+| `rayleigh` | \(J_{RQ}\) | Rayleigh on mixed test directions (eigen subsample + random + current lifts). **Not** identical to `eigen`; with every reference eigenvector it recovers \(J_\lambda\) up to the tiny numerical grounding shift. |
 | `voltage` | \(J_V=\sum_k\|v_S^{(k)}-v_M^{(k)}\|_2^2\) | Mixed-BC IR drops (pads V-fixed, sinks I-driven). Same physics as `spec_flow` IR fit. |
 | `minimax` | \(J_\infty=\max_{k,j}\|(v_S-v_M)/(|v_M|+\epsilon)\|\) | Nelder–Mead on max relative IR; warm-started from `voltage`. |
 
@@ -68,6 +72,24 @@ Tests (no pytest required):
 ```bash
 PYTHONPATH=lipohan_work/src "$MY_FLOW_PYTHON" lipohan_work/tests/test_costs.py
 ```
+
+## Comprehensive synthetic study
+
+`run_synthetic_study.py` tests all costs against exact-global, smooth/random
+localized, long-range, and combined synthetic truths. It separates fitting
+currents from 120 held-out currents, varies pad voltages, and includes current,
+Rayleigh-basis, p-norm, hybrid-weight, seed, minimax multi-start, grid-size,
+and conductance-noise ablations.
+
+```bash
+PYTHONPATH=lipohan_work/src "$MY_FLOW_PYTHON" \
+  lipohan_work/src/run_synthetic_study.py \
+  --out lipohan_work/outputs/synthetic_study_full \
+  --max-nfev 250 --heldout-repeats 5
+```
+
+See [`RESULTS_SYNTHETIC.md`](RESULTS_SYNTHETIC.md) for the method, results,
+limitations, and recommended objectives.
 
 ## ibmpg2 snapshot (seed 0, auto pitch 927, 159 ports)
 

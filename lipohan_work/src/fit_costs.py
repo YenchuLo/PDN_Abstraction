@@ -113,7 +113,14 @@ def fit_cost(
             fun,
             x0=log_x0,
             method="Nelder-Mead",
-            options={"maxiter": max(max_nfev, 400), "xatol": 1e-8, "fatol": 1e-12, "adaptive": True},
+            bounds=list(zip(log_lo, log_hi)),
+            options={
+                "maxiter": max(4 * max_nfev, 800),
+                "maxfev": max(8 * max_nfev, 1600),
+                "xatol": 1e-8,
+                "fatol": 1e-12,
+                "adaptive": True,
+            },
         )
         log_theta = np.clip(np.asarray(res.x, dtype=float), log_lo, log_hi)
         success = bool(res.success)

@@ -31,6 +31,7 @@ COST_ALIASES: Dict[str, str] = {
     "j_l": "eigen",
     "lambda": "eigen",
     "j_lambda_rel": "eigen_rel",
+    "j_lambda_rel_floor": "eigen_rel_floor",
     "j_f": "frobenius",
     "f": "frobenius",
     "j_f_rel": "frobenius_rel",
@@ -39,13 +40,16 @@ COST_ALIASES: Dict[str, str] = {
     "j_rq": "rayleigh",
     "rq": "rayleigh",
     "j_rq_rel": "rayleigh_rel",
+    "j_rq_rel_floor": "rayleigh_rel_floor",
     "j_v": "voltage",
     "v": "voltage",
     "j_v_rel": "voltage_rel",
+    "j_v_rel_floor": "voltage_rel_floor",
     "j_inf": "minimax",
     "j_infty": "minimax",
     "inf": "minimax",
     "infty": "minimax",
+    "j_inf_floor": "minimax_floor",
     "j_p": "pnorm",
     "j_r": "reff",
     "effective_resistance": "reff",
@@ -56,18 +60,28 @@ COST_ALIASES: Dict[str, str] = {
 VECTOR_COSTS = {
     "eigen",
     "eigen_rel",
+    "eigen_rel_floor",
     "frobenius",
     "frobenius_rel",
     "weighted",
     "rayleigh",
     "rayleigh_rel",
+    "rayleigh_rel_floor",
     "voltage",
     "voltage_rel",
+    "voltage_rel_floor",
     "pnorm",
     "reff",
     "hybrid",
 }
-SCALAR_COSTS = {"minimax", "spectral"}
+SCALAR_COSTS = {"minimax", "minimax_floor", "pnorm_rel_floor", "spectral"}
+STABILIZED_COSTS = (
+    "eigen_rel_floor",
+    "rayleigh_rel_floor",
+    "voltage_rel_floor",
+    "minimax_floor",
+    "pnorm_rel_floor",
+)
 
 
 def canonical_cost(name: str) -> str:
@@ -88,14 +102,19 @@ def parse_cost_list(raw: str | Sequence[str] | None) -> List[str]:
     if parts == ["all"]:
         return list(PRIORITY_COSTS) + [
             "eigen_rel",
+            "eigen_rel_floor",
             "frobenius_rel",
             "weighted",
             "rayleigh_rel",
+            "rayleigh_rel_floor",
             "voltage_rel",
+            "voltage_rel_floor",
             "pnorm",
+            "pnorm_rel_floor",
             "reff",
             "spectral",
             "hybrid",
+            "minimax_floor",
         ]
     out: List[str] = []
     seen = set()
@@ -113,6 +132,7 @@ class FitContext:
     model: PixelRModel
     ports: PortSet
     seed: int = 0
+    training_stimuli: Optional[Sequence[Tuple[str, np.ndarray]]] = None
     p_norm: float = 8.0
     hybrid_alpha: float = 1.0
     hybrid_beta: float = 1.0
@@ -124,6 +144,8 @@ class FitContext:
     w_nbr: float = 3.0
     w_via: float = 3.0
     w_far: float = 0.05
+    voltage_rel_floor_fraction: float = 0.02
+    spectral_rel_floor_fraction: float = 1e-6
     lam_M: np.ndarray = field(init=False)
     Q: np.ndarray = field(init=False)
     V_pad: np.ndarray = field(init=False)
@@ -134,8 +156,11 @@ class FitContext:
     I_sinks: List[np.ndarray] = field(init=False)
     drops_m: List[np.ndarray] = field(init=False)
     target_v: np.ndarray = field(init=False)
+    voltage_rel_denom: np.ndarray = field(init=False)
     X_rq: np.ndarray = field(init=False)
     rq_target: np.ndarray = field(init=False)
+    rq_rel_denom: np.ndarray = field(init=False)
+    eigen_rel_denom: np.ndarray = field(init=False)
     W: np.ndarray = field(init=False)
     reff_M: np.ndarray = field(init=False)
     tri: Tuple[np.ndarray, np.ndarray] = field(init=False)
@@ -145,13 +170,32 @@ class FitContext:
         G = np.asarray(self.Gprime, dtype=float)
         self.Gprime = 0.5 * (G + G.T)
         self.lam_M, self.Q = grounded_eigh(self.Gprime)
+        eigen_floor = max(
+            self.spectral_rel_floor_fraction * float(np.max(np.abs(self.lam_M))),
+            EPS,
+        )
+        self.eigen_rel_denom = np.abs(self.lam_M) + eigen_floor
         g_scale = max(float(np.median(np.diag(self.Gprime))), 1e-6)
         self.r_scale = 1.0 / g_scale
         self.V_pad = np.asarray(self.ports.pad_voltages, dtype=float)
         self.vref = float(np.mean(self.V_pad))
         n_p = self.ports.n_pads
         self.lu_m, self.Gsp_m = _factor_sink_block(self.Gprime, n_p)
-        stimuli = build_stimuli(self.ports, seed=self.seed)
+        if self.training_stimuli is None:
+            stimuli = build_stimuli(self.ports, seed=self.seed)
+        else:
+            stimuli = [
+                (str(name), np.asarray(current, dtype=float).copy())
+                for name, current in self.training_stimuli
+            ]
+        if not stimuli:
+            raise ValueError("training_stimuli must contain at least one current pattern")
+        for name, current in stimuli:
+            if np.asarray(current).shape != (self.ports.n_sinks,):
+                raise ValueError(
+                    f"stimulus {name!r} shape {np.asarray(current).shape} != "
+                    f"({self.ports.n_sinks},)"
+                )
         self.stimulus_names = [n for n, _ in stimuli]
         self.I_sinks = [np.asarray(I, dtype=float) for _, I in stimuli]
         self.drops_m = []
@@ -161,6 +205,14 @@ class FitContext:
             )
             self.drops_m.append(self.vref - Vm[n_p:])
         self.target_v = np.concatenate(self.drops_m)
+        voltage_denominators = []
+        for drop in self.drops_m:
+            floor = max(
+                self.voltage_rel_floor_fraction * float(np.max(np.abs(drop))),
+                EPS,
+            )
+            voltage_denominators.append(np.abs(drop) + floor)
+        self.voltage_rel_denom = np.concatenate(voltage_denominators)
         self.X_rq = _rq_basis(
             self.Q,
             self.Gprime,
@@ -172,6 +224,12 @@ class FitContext:
             seed=self.seed,
         )
         self.rq_target = _rayleigh(self.Gprime, self.X_rq)
+        rq_floor = max(
+            self.spectral_rel_floor_fraction
+            * float(np.max(np.abs(self.rq_target))),
+            EPS,
+        )
+        self.rq_rel_denom = np.abs(self.rq_target) + rq_floor
         self.W = _weight_matrix(
             self.model,
             self.Gprime.shape[0],
@@ -310,6 +368,9 @@ def residual(ctx: FitContext, cost: str, Gs: np.ndarray) -> np.ndarray:
     if c == "eigen_rel":
         lam_S = proj_eigs(ctx.Q, Gs)
         return (lam_S - ctx.lam_M) / (np.abs(ctx.lam_M) + EPS)
+    if c == "eigen_rel_floor":
+        lam_S = proj_eigs(ctx.Q, Gs)
+        return (lam_S - ctx.lam_M) / ctx.eigen_rel_denom
     if c == "frobenius":
         return (Gs - Gm).ravel()
     if c == "frobenius_rel":
@@ -322,16 +383,26 @@ def residual(ctx: FitContext, cost: str, Gs: np.ndarray) -> np.ndarray:
     if c == "rayleigh_rel":
         num = _rayleigh(Gs - Gm, ctx.X_rq)
         return num / (ctx.rq_target + EPS)
+    if c == "rayleigh_rel_floor":
+        num = _rayleigh(Gs - Gm, ctx.X_rq)
+        return num / ctx.rq_rel_denom
     if c == "voltage":
         drops = ctx.ir_drops(Gs)
         return np.concatenate(drops) - ctx.target_v
     if c == "voltage_rel":
         drops = np.concatenate(ctx.ir_drops(Gs))
         return (drops - ctx.target_v) / (np.abs(ctx.target_v) + EPS)
+    if c == "voltage_rel_floor":
+        drops = np.concatenate(ctx.ir_drops(Gs))
+        return (drops - ctx.target_v) / ctx.voltage_rel_denom
     if c == "pnorm":
         e = np.concatenate(ctx.ir_drops(Gs)) - ctx.target_v
         p = float(ctx.p_norm)
         # ||r||_2^2 = sum |e|^p  (up to the usual 1/N later at report time)
+        return np.sign(e) * np.power(np.abs(e) + EPS, 0.5 * p)
+    if c == "pnorm_rel_floor":
+        e = (np.concatenate(ctx.ir_drops(Gs)) - ctx.target_v) / ctx.voltage_rel_denom
+        p = float(ctx.p_norm)
         return np.sign(e) * np.power(np.abs(e) + EPS, 0.5 * p)
     if c == "reff":
         R_S = _reff_matrix(Gs)
@@ -359,6 +430,12 @@ def scalar_loss(ctx: FitContext, cost: str, Gs: np.ndarray) -> float:
     if c == "minimax":
         rel = residual(ctx, "voltage_rel", Gs)
         return float(np.max(np.abs(rel)))
+    if c == "minimax_floor":
+        rel = residual(ctx, "voltage_rel_floor", Gs)
+        return float(np.max(np.abs(rel)))
+    if c == "pnorm_rel_floor":
+        rel = residual(ctx, "voltage_rel_floor", Gs)
+        return float(np.mean(np.abs(rel) ** float(ctx.p_norm)) ** (1.0 / float(ctx.p_norm)))
     if c == "spectral":
         return float(np.linalg.norm(Gs - ctx.Gprime, ord=2))
     r = residual(ctx, c, Gs)

@@ -31,6 +31,7 @@ def evaluate(ctx: FitContext, Gs: np.ndarray) -> Dict[str, Any]:
     concat_m = ctx.target_v
     concat_s = np.concatenate(drops_s)
     rel_all = (concat_s - concat_m) / (np.abs(concat_m) + EPS)
+    rel_floor = (concat_s - concat_m) / ctx.voltage_rel_denom
     vdd = float(ctx.vref) if abs(ctx.vref) > EPS else 1.0
     ir_pct_m = 100.0 * concat_m / vdd
     ir_pct_s = 100.0 * concat_s / vdd
@@ -44,6 +45,9 @@ def evaluate(ctx: FitContext, Gs: np.ndarray) -> Dict[str, Any]:
     return {
         "J_lambda": float(np.sum(np.square(ctx.lam_M - lam_S))),
         "J_lambda_rel": float(np.sum(np.square((lam_S - ctx.lam_M) / (np.abs(ctx.lam_M) + EPS)))),
+        "J_lambda_rel_floor": float(
+            np.sum(np.square((lam_S - ctx.lam_M) / ctx.eigen_rel_denom))
+        ),
         "relative_spectral_error": float(relative_spectral_error(ctx.lam_M, lam_S)),
         "J_F": J_F,
         "J_F_rel": J_F_rel,
@@ -54,9 +58,18 @@ def evaluate(ctx: FitContext, Gs: np.ndarray) -> Dict[str, Any]:
                 np.square(_rayleigh(Gs - Gm, ctx.X_rq) / (ctx.rq_target + EPS))
             )
         ),
+        "J_RQ_rel_floor": float(
+            np.sum(
+                np.square(
+                    (_rayleigh(Gs - Gm, ctx.X_rq)) / ctx.rq_rel_denom
+                )
+            )
+        ),
         "J_V": float(np.sum(np.square(concat_s - concat_m))),
         "J_V_rel": float(np.sum(np.square(rel_all))),
+        "J_V_rel_floor": float(np.sum(np.square(rel_floor))),
         "J_inf": float(np.max(np.abs(rel_all))),
+        "J_inf_floor": float(np.max(np.abs(rel_floor))),
         "J_p4": float(np.mean(np.abs(concat_s - concat_m) ** 4) ** 0.25),
         "J_p8": float(np.mean(np.abs(concat_s - concat_m) ** 8) ** 0.125),
         "J_R": J_R,

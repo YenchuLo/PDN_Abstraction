@@ -1,2 +1,1 @@
-__pycache__/
-*.pyc
+"""Pixel-R cost-function experiments."""
